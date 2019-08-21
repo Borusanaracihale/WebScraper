@@ -334,7 +334,30 @@ class MainPageScraper(Scraper,object):
         self.batchrun(self._wrapperBatchRun_appendlistingslastweek,links)
         
     def scrapeoffsetdayListingsinES(self,links):
-        self.batchrun(self._wrapperBatchRun_appendlistingslastweek,links)
+        es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
+        query = json.dumps({
+                                    "query": { 
+                                    "bool": { 
+                                       "must": [
+                                                 { "match": { "uri":  "3days" }}
+                                            ]
+                                        }
+                                    },
+                                    "size": 10000
+                            })
+                            
+        res = es.search(index="scrapeupperlimitlastweeklinks",  body=query)
+        
+        links = []
+        
+        links = res['hits']['hits']
+        
+        request_link = []
+        
+        for mainlink in links:
+            request_link.append(mainlink["_source"]["uri"])
+            
+        self.batchrun(self._wrapperBatchRun_appendlistingslastweek,request_link)
         
 class DetailsScraper(Scraper):
     def __init__(self, listings, n_jobs, uutils, lowerdelay=1, upperdelay=6,current_date = ""):
@@ -369,26 +392,26 @@ class DetailsScraper(Scraper):
         self.sahibinden_xpath = '//*[@id="classifiedDetail"]/div[1]/div[2]/div[3]/div/div/div/h5'
         self.fiyat_xpath =      '//*[@id="classifiedDetail"]/div[1]/div[2]/div[2]/h3'
         self.il_xpath =      '//*[@id="classifiedDetail"]/div[1]/div[2]/div[2]/h2/a'
-    
+        self.container_xpath = '//*[@id="classifiedDetail"]'
 
     def _get_details_from_url_xpath(self, url):
 
         car = {}
+        store = {}
         c = self.uutils.delayedreadURL(url, self.lowerdelay, self.upperdelay)
         try:
             root = html.fromstring(c)
+ 
             car['ilanno'] = xpathSafeRead(root, self.ilan_xpath, 'ilan.')
             car['ilantarihi'] = xpathSafeRead(root, self.ilantarihi_xpath, 'ilan tarihi.')
             car['sehir'] = xpathSafeRead(root, self.il_xpath, 'sehir.')
             car['marka'] = xpathSafeRead(root, self.marka_xpath, 'marka.')
             car['seri'] = xpathSafeRead(root, self.seri_xpath, 'seri.')
             car['model'] = xpathSafeRead(root, self.model_xpath, 'model.')
-
             car['yil'] = xpathSafeRead(root, self.yil_xpath, 'yil.')
             car['yakit'] = xpathSafeRead(root, self.yakit_xpath, 'yakit.')
             car['vites'] = xpathSafeRead(root, self.vites_xpath, 'vites')
             car['km'] = xpathSafeRead(root, self.km_xpath, 'km.')
-            
             car['kasatipi'] = xpathSafeRead(root, self.kasatipi_xpath, 'kasa tipi.')
             car['motorgucu'] = xpathSafeRead(root, self.motorgucu_xpath, 'motor gucu.')
             car['motorhacmi'] = xpathSafeRead(root, self.motorhacmi_xpath, 'motor hacmi.')
@@ -408,12 +431,21 @@ class DetailsScraper(Scraper):
             car['durum'] = xpathSafeRead(root, self.durum_xpath, 'durumu.')
             car['fiyat'] = xpathSafeRead(root, self.fiyat_xpath, 'fiyat.')
             car['uri'] = url
-            
+            #car['path'] = c
+            car['is_riding'] = 1
             car['addeddate'] = self._current_date
             
-            print(" **** Processing complete **** ")
+           
             es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
+            
+            '''
+            store["ilanno"] = car["ilanno"]
+            store["html"] = c
+            
+            result_store = es.index(index='htmlstore',doc_type='_doc',body=store)
+            '''
             result = es.index(index='basescparedlist',doc_type='_doc',body=car)
+            
             query = json.dumps({
                             "query": { 
                             "bool": { 
@@ -429,6 +461,7 @@ class DetailsScraper(Scraper):
             hit_id = search_res["hits"]["hits"][0]["_id"]
             upt = es.update(index='scrapelists',doc_type='_doc',id=hit_id,body={"doc": {"isquery": True}})
             
+            print(" **** Processing complete ****  --------> " + car['ilanno'] )
             return car
         except:
             print(sys.exc_info()[0], " occured.")

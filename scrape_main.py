@@ -10,7 +10,7 @@ now = datetime.datetime.now()
 day = now.day
 month = now.month
 year = now.year
-
+dd=day
 
 if day < 10:
     dd = "0"+ str(day)
@@ -21,7 +21,7 @@ if month < 10:
 suffix = str(dd)+"-"+str(mm)+"-"+str(year)
 
 listingswait = 5
-mainwait = 30
+mainwait = 15
 
 ulib = URLlib()
 ureq = URLreq()
@@ -34,11 +34,17 @@ print("---------------------Scraping Last 3 Days Start--------------------------
 
 print("Waiting %d seconds before scraping listings..." %mainwait)
 
-mscr.scrapeoffsetdayListings(3)
+#mscr.scrapeoffsetdayListings(3)
+
+#links = []
+
+#mscr.scrapeoffsetdayListingsinES(links)
 
 print("---------------------Scraping Last 3 Days Finish---------------------------")
 
+
 print("Waiting %d seconds before scraping listings..." %mainwait)
+
 
 es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
 query = json.dumps({
@@ -49,7 +55,7 @@ query = json.dumps({
                                     ]
                                 }
                             },
-                            "size": 50000
+                            "size": 150000
                     })
                     
 res = es.search(index="scrapelists",  body=query)
