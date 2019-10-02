@@ -39,17 +39,23 @@ user_agent_list = [
             ]
 
 def get_proxies():
-    url = 'https://free-proxy-list.net/'
+    url = 'https://hidemy.name/en/proxy-list/?country=DE#list'
     random_user_agent = random.choice(user_agent_list)
     headers = {'User-Agent': random_user_agent}
     response = requests.get(url,headers=headers)
     parser = fromstring(response.text)
+    print(response.text)
     proxies = set()
-    for i in parser.xpath('//tbody/tr')[:20]:
-        if i.xpath('.//td[7][contains(text(),"yes")]'):
-            proxy = ":".join([i.xpath('.//td[1]/text()')[0], i.xpath('.//td[2]/text()')[0]])
-            proxies.add(proxy)
+    tr = []
+    tr = parser.xpath('//tbody[0]/tr')
+    print(tr)
+    for i in parser.xpath('//tbody/tr')[:35]:
+        #if i.xpath('.//td[7][contains(text(),"yes")]'):
+        proxy = ":".join([i.xpath('.//td[1]/text()')[0], i.xpath('.//td[2]/text()')[0]])
+        proxies.add(proxy)
     return proxies
+
+
 '''
 
 #If you are copy pasting proxy ips, put in the list below
@@ -65,8 +71,8 @@ proxy_pool = cycle(proxies)
 
 
 
-
-
+print(proxies)
+'''
 for i in range(1,11):
     #Get a proxy from the pool
     proxy = next(proxy_pool)
@@ -75,16 +81,13 @@ for i in range(1,11):
     try:
         random_user_agent = random.choice(user_agent_list)
         headers = {'User-Agent': random_user_agent}
-        response = requests.get(url,headers=headers,proxies={"http": proxy, "https": proxy})
+        response = requests.get(url,headers=headers,proxies={"http": proxy, "https": proxy}, timeout=6)
         print(response.content)
     except:
         #Most free proxies will often get connection errors. You will have retry the entire request using another proxy to work. 
         #We will just skip retries as its beyond the scope of this tutorial and we are only downloading a single url 
         print("Skipping. Connnection error")
-
-
-'''
-
+        continue
 
 ulib = URLlib()
 res = ulib.delayedreadURL(url,2,5)

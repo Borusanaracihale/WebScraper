@@ -60,7 +60,7 @@ class Scraper():
 class URLrequests():
     def __init__(self, bypassdelayed=False):
         self.bypassdelayed=bypassdelayed
-
+        
     def _facebook(self, url):
         return requests.get('https://developers.facebook.com/tools/debug/echo/?q=' + url, verify=False).text
 
@@ -119,4 +119,5 @@ def xpathSafeRead(pageroot, xpath, field):
     try:
         return pageroot.xpath(xpath)[0].text.strip()
     except:
+        print("Encountered ", sys.exc_info(), " while reading field: ", field)
         return 'NA'

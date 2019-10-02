@@ -1,6 +1,7 @@
 from s_scrape.base import Scraper, xpathSafeRead
-from s_scrape.io import IO
 
+import requests
+from itertools import cycle
 # scraping
 from bs4 import BeautifulSoup
 from lxml import html
@@ -10,9 +11,11 @@ import sys
 import threading
 import json
 
+
+
 class MainPageScraper(Scraper,object):
-    def __init__(self, n_jobs, uutils, lowerdelay=1, upperdelay=5, current_date = "05-08-19"):
-        super(MainPageScraper,self).__init__(url="https://www.sahibinden.com/kategori/otomobil", njobs = n_jobs, lowerdelay=lowerdelay, upperdelay=upperdelay)
+    def __init__(self, n_jobs, uutils,header,proxy,elastic, lowerdelay=2, upperdelay=5, current_date = "05-08-19",is_riding = 1):
+        super(MainPageScraper,self).__init__(url="https://www.sahibinden.com/kategori/arazi-suv-pickup", njobs = n_jobs, lowerdelay=lowerdelay, upperdelay=upperdelay)
         self._modelurls = []
         self.submodelurls = []
         self._listings = []
@@ -20,21 +23,17 @@ class MainPageScraper(Scraper,object):
         self.uutils = uutils
         self.lock = threading.Lock()
         self._current_date = current_date
-        
-    @property
-    def linklist(self):
-        return self._modelurls
-
-    @property
-    def listings(self):
-        return self._listings
-    
-
-    
+        self.is_riding = is_riding
+        self.current_proxy=""
+        self.error_xpath = '//*[@id="qr-error-footer"]/p/strong'
+        self.header = header
+        self.proxy = proxy
+        self.elastic=elastic
+        self.ok = 0
+        self.err = 0
     #Private methods
     def _get_submodels_from_page(self, url, url_delayed=True):
         sublist = list()
-        print("----> Scraping sub-models from url: %s" % (url))
         if url_delayed:
             c = self.uutils.delayedreadURL(url, self.lowerdelay, self.upperdelay)
         else:
@@ -42,7 +41,6 @@ class MainPageScraper(Scraper,object):
         soup = BeautifulSoup(c, "html.parser")
         subList = soup.find_all("li", {"class": "cl3"})
 
-        
         for itm in subList:
             tmp = itm.find("a", href=True)
             if tmp['href'] != "#":
@@ -50,17 +48,18 @@ class MainPageScraper(Scraper,object):
                 uri = {}
                 uri["uri"]  = ret_str
                 uri ["isquery"] = False
+                uri ["is_riding"] = self.is_riding
                 uri["addeddate"] = self._current_date
-                es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
-                res=es.index(index='scrapesubmodels',doc_type='_doc',body=uri)
+                self.elastic.createRow('scrapesubmodels',uri)
+                
         return sublist
     
 
-    def _get_listings_from_page(self, url, url_delayed=True):
+    def _get_listings_from_page(self, url, url_delayed=False):
         if url is None:
             pass
         try:
-            print("----> Scraping listings from url: %s" % (url))
+            print("----> Scraping url: %s" % (url))
             if url_delayed:
                 c = self.uutils.delayedreadURL(url, self.lowerdelay, self.upperdelay)
             else:
@@ -72,16 +71,15 @@ class MainPageScraper(Scraper,object):
                 try:
                     cur = listitems[i]
                     a_curr = cur.a
-                    print('Link posting: ' + a_curr['href'])
                     ret_str = "https://www.sahibinden.com" + a_curr['href']
                     self.lock.acquire()
                     self._listings.append(ret_str)                    
                     tmpLink = {}
                     tmpLink["uri"] = ret_str
                     tmpLink["isquery"] = False
+                    tmpLink["is_riding"] = self.is_riding
                     tmpLink["addeddate"] = self._current_date
                     tmpLink["ilanno"] = listitems[i]["data-id"]
-                    es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
                     query = json.dumps({
                             "query": { 
                             "bool": { 
@@ -93,7 +91,8 @@ class MainPageScraper(Scraper,object):
                            "size":1
                     })
                     
-                    res = es.search(index="scrapelists",  body=query)
+                    
+                    res = self.elastic.getSearch('scrapelists',query)
                     
                     if res["_shards"]["successful"] == 1:
                         result_count = len(res["hits"]["hits"])
@@ -101,15 +100,11 @@ class MainPageScraper(Scraper,object):
                              if res["hits"]["hits"][0]["_source"]["uri"] == ret_str:
                                  continue
                     
-                  
-                    res=es.index(index='scrapelists',doc_type='_doc',body=tmpLink)
-                    print("result list add :" + ret_str)
+                    self.elastic.createRow('scrapelists',tmpLink)
                     self.lock.release()
                 except:
                     self.lock.release()
                     print('Read error in: ' + str(i))
-
-            return listings_list
 
         except:
             pass
@@ -117,17 +112,45 @@ class MainPageScraper(Scraper,object):
 
     def _get_listings_from_page_last_week(self, url, url_delayed=True):
         if url is None:
-            pass
+            pass        
         try:
+           
+            root =""
+            c =""
+            if self.current_proxy == "":
+                proxies = self.proxy.getProxies()
+                proxy_pool = cycle(proxies)
+                for i in range(1,21):
+                    #Get a proxy from the pool
+                    proxy = next(proxy_pool)                    
+                    try:
+                        random_user_agent = self.header.getRandomChoiceHeader()
+                        response = requests.get(url,headers=random_user_agent,proxies={"http": proxy, "https": proxy},timeout=5)
+                        c = response.content
+                        root = html.fromstring(response.content)
+                        err =  xpathSafeRead(root,self.error_xpath,'ERR.')
+                        if err == "NA":
+                            #print("SUCESSS -------------> " + proxy)
+                            self.current_proxy = proxy
+                            break
+                        else:
+                            self.current_proxy = ""
+                            continue
+                    except:
+                        self.current_proxy = ""
+                        continue
+            '''
             if url_delayed:
                 c = self.uutils.delayedreadURL(url, self.lowerdelay, self.upperdelay)
             else:
                 c = self.uutils.readURL(url)
+            '''
+            #time.sleep(3)
+            
             soup = BeautifulSoup(c, "html.parser")
             listitems = soup.find_all("tr", {"class": "searchResultsItem"})
             
             if len(listitems) > 0:
-                es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
                 for i in range(len(listitems)):
                     try:
                         cur = listitems[i]
@@ -138,10 +161,9 @@ class MainPageScraper(Scraper,object):
                         tmpLink = {}
                         tmpLink["uri"] = ret_str
                         tmpLink["isquery"] = False
-                        tmpLink["addeddate"] = self._current_date
+                        tmpLink["is_riding"] = self.is_riding
                         tmpLink["addeddate"] = self._current_date
                         tmpLink["ilanno"] = cur["data-id"]
-                        print(tmpLink)
                         query = json.dumps({
                                 "query": { 
                                 "bool": { 
@@ -153,25 +175,42 @@ class MainPageScraper(Scraper,object):
                                "size":1
                         })
                         
-                        print("Add url : " + ret_str)
-                        res = es.search(index="scrapelists",  body=query)
-                        
+                        res = self.elastic.getSearch('scrapelists',query)
                         if res["_shards"]["successful"] == 1:
                             result_count = len(res["hits"]["hits"])
                             if result_count > 0:
                                  if res["hits"]["hits"][0]["_source"]["uri"] == ret_str:
-                                         print("Is Exist : " + ret_str)
                                          self.lock.release()
                                          continue
                     
-                    
-                        res=es.index(index='scrapelists',doc_type='_doc',body=tmpLink)  
-                        print("Added url : " + ret_str)
+                        self.elastic.createRow('scrapelists',tmpLink)
+                        
+                        self.ok = self.ok + 1
+                        print("Added url cunt : " + str(self.ok))
                         self.lock.release()
                     except:
-                        print('Read error in: ' + str(i))
+                        self.err = self.err + 1
+                        print('Read error cunt: ' + str(self.err))
+                        self.lock.release()
                         continue
-
+                
+                
+                query = json.dumps({
+                                "query": { 
+                                "bool": { 
+                                   "must": [
+                                              { "match": { "uri":   url }} 
+                                        ]
+                                    }
+                                },
+                               "size":1
+                        })
+                search_res = self.elastic.getSearch('scrapeupperlimitlastweeklinks',query)
+                hit_id = search_res["hits"]["hits"][0]["_id"]                
+                body = {"doc": {"isquery": True}}                
+                self.es.UpdateRow('scrapeupperlimitlastweeklinks',hit_id,body)
+            else:
+                self.current_proxy = ""
         except:
             pass
 
@@ -179,7 +218,6 @@ class MainPageScraper(Scraper,object):
         try:
             c = self.uutils.readURL(link)
             xpth = '//*[@id="searchResultsSearchForm"]/div/div[4]/div[1]/div[2]/div/div[1]/span'
-
             tot = self.uutils.choosebyXPath(c, xpth)
             tot = tot.replace(".", "")
             tot = re.findall('\d+',tot)
@@ -201,13 +239,11 @@ class MainPageScraper(Scraper,object):
                "query" : {
                 "match_all" : {}
             },
-            "size": 1000
+            "size": 2000
         })
     
         flat_list = []
-        es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
-        res = es.search(index="scrapesubmodels",  body=query)
-        
+        res = self.elastic.getSearch('scrapesubmodels',query)
         flat_list = res['hits']['hits']
         links = []
         for mainlink in flat_list:
@@ -222,9 +258,9 @@ class MainPageScraper(Scraper,object):
                     tmpLink = {}
                     tmpLink["uri"] = link
                     tmpLink["isquery"] = False
+                    tmpLink["is_riding"] = self.is_riding
                     tmpLink["addeddate"] = self._current_date
-                    es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
-                    res=es.index(index='scrapeupperlimitlinks',doc_type='_doc',body=tmpLink)
+                    self.elastic.createRow('scrapeupperlimitlinks',tmpLink)
         return links
 
     def _wrapperBatchRun_upperlimitslastweek(self,day):
@@ -233,15 +269,18 @@ class MainPageScraper(Scraper,object):
         
         query = json.dumps({
                "query" : {
-                "match_all" : {}
-            },
-            "size": 1000
-        })
+                "bool": { 
+                                    
+                               "must": [
+                                          { "match": { "isquery":   False }} 
+                                    ]
+                                }
+                            },
+                "size": 2000
+            })
     
         flat_list = []
-        es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
-        res = es.search(index="scrapesubmodels",  body=query)
-        
+        res = self.elastic.getSearch('scrapesubmodels',query)
         flat_list = res['hits']['hits']
         links = []
         for mainlink in flat_list:
@@ -262,7 +301,7 @@ class MainPageScraper(Scraper,object):
                     tmpLink["uri"] = link
                     tmpLink["isquery"] = False
                     tmpLink["addeddate"] = self._current_date
-                    
+                    tmpLink["is_riding"] = self.is_riding
                     
                     query = json.dumps({
                                 "query": { 
@@ -274,9 +313,7 @@ class MainPageScraper(Scraper,object):
                                 },
                                "size":1
                         })
-                        
-                    res = es.search(index="scrapeupperlimitlastweeklinks",  body=query)
-                    
+                    res = self.elastic.getSearch('scrapeupperlimitlastweeklinks',query)
                     #already add links
                     links.append(link)
                     
@@ -284,12 +321,9 @@ class MainPageScraper(Scraper,object):
                             result_count = len(res["hits"]["hits"])
                             if result_count > 0:
                                  if res["hits"]["hits"][0]["_source"]["uri"] == link:
-                                         print("Exist Upper Link: " + link)
                                          continue
                     
-                    
-                    es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
-                    res=es.index(index='scrapeupperlimitlastweeklinks',doc_type='_doc',body=tmpLink)
+                    self.elastic.createRow('scrapeupperlimitlastweeklinks',tmpLink)
                     print("Added Upper Link : " + link)
         return links
 
@@ -308,8 +342,7 @@ class MainPageScraper(Scraper,object):
         tmpUri["uri"] = uri
         tmpUri["isquery"] = False
         tmpUri["addeddate"] = self._current_date
-        es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
-        res=es.index(index='scrapemodels',doc_type='_doc',body=tmpUri)
+        self.elastic.createRow('scrapemodels',tmpUri)
     #Public methods
     def scrapeModels(self):
         c = self.uutils.readURL(self.link)
@@ -334,7 +367,6 @@ class MainPageScraper(Scraper,object):
         self.batchrun(self._wrapperBatchRun_appendlistingslastweek,links)
         
     def scrapeoffsetdayListingsinES(self,links):
-        es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
         query = json.dumps({
                                     "query": { 
                                     "bool": { 
@@ -346,12 +378,9 @@ class MainPageScraper(Scraper,object):
                                     "size": 10000
                             })
                             
-        res = es.search(index="scrapeupperlimitlastweeklinks",  body=query)
-        
-        links = []
-        
-        links = res['hits']['hits']
-        
+        res = self.elastic.getSearch('scrapeupperlimitlastweeklinks',query)
+        links = []        
+        links = res['hits']['hits']        
         request_link = []
         
         for mainlink in links:
@@ -360,7 +389,7 @@ class MainPageScraper(Scraper,object):
         self.batchrun(self._wrapperBatchRun_appendlistingslastweek,request_link)
         
 class DetailsScraper(Scraper):
-    def __init__(self, listings, n_jobs, uutils, lowerdelay=1, upperdelay=6,current_date = ""):
+    def __init__(self, listings, n_jobs, uutils,header,proxy,elastic, lowerdelay=1, upperdelay=6,current_date = "",is_riding = 1):
         super().__init__(url="", njobs=n_jobs, lowerdelay=lowerdelay, upperdelay=5)
         self.listings = listings
         self.final_list = []
@@ -393,79 +422,124 @@ class DetailsScraper(Scraper):
         self.fiyat_xpath =      '//*[@id="classifiedDetail"]/div[1]/div[2]/div[2]/h3'
         self.il_xpath =      '//*[@id="classifiedDetail"]/div[1]/div[2]/div[2]/h2/a'
         self.container_xpath = '//*[@id="classifiedDetail"]'
-
+        self.error_xpath = '//*[@id="qr-error-footer"]/p/strong'
+        self.is_riding = is_riding    
+        self.current_proxy = ""
+        
+        self.proxy=proxy
+        self.header=header
+        self.elastic=elastic
+    
     def _get_details_from_url_xpath(self, url):
-
+        #store = {}
         car = {}
-        store = {}
-        c = self.uutils.delayedreadURL(url, self.lowerdelay, self.upperdelay)
-        try:
-            root = html.fromstring(c)
- 
-            car['ilanno'] = xpathSafeRead(root, self.ilan_xpath, 'ilan.')
-            car['ilantarihi'] = xpathSafeRead(root, self.ilantarihi_xpath, 'ilan tarihi.')
-            car['sehir'] = xpathSafeRead(root, self.il_xpath, 'sehir.')
-            car['marka'] = xpathSafeRead(root, self.marka_xpath, 'marka.')
-            car['seri'] = xpathSafeRead(root, self.seri_xpath, 'seri.')
-            car['model'] = xpathSafeRead(root, self.model_xpath, 'model.')
-            car['yil'] = xpathSafeRead(root, self.yil_xpath, 'yil.')
-            car['yakit'] = xpathSafeRead(root, self.yakit_xpath, 'yakit.')
-            car['vites'] = xpathSafeRead(root, self.vites_xpath, 'vites')
-            car['km'] = xpathSafeRead(root, self.km_xpath, 'km.')
-            car['kasatipi'] = xpathSafeRead(root, self.kasatipi_xpath, 'kasa tipi.')
-            car['motorgucu'] = xpathSafeRead(root, self.motorgucu_xpath, 'motor gucu.')
-            car['motorhacmi'] = xpathSafeRead(root, self.motorhacmi_xpath, 'motor hacmi.')
-            car['cekis'] = xpathSafeRead(root, self.cekis_xpath, 'cekis.')
-            car['renk'] = xpathSafeRead(root, self.renk_xpath, 'renk.')
-            car['garanti'] = xpathSafeRead(root, self.garanti_xpath, 'garanti.')
-            #car['hasardurumu'] = xpathSafeRead(root, self.hasar_xpath, 'hasar durumu.')
-            car['plaka'] = xpathSafeRead(root, self.plakauyruk_xpath, 'plaka/uyruk.')
-            car['kimden'] = xpathSafeRead(root, self.kimden_xpath, 'kimden.')
-            
-            if(car['kimden'] == "Sahibinden"):
-                car['owner'] = xpathSafeRead(root, self.sahibinden_xpath, 'owner.')
-            else:
-                car['owner'] = xpathSafeRead(root, self.galeri_xpath, 'owner.')
-            
-            car['takas'] = xpathSafeRead(root, self.takas_xpath, 'takas.')
-            car['durum'] = xpathSafeRead(root, self.durum_xpath, 'durumu.')
-            car['fiyat'] = xpathSafeRead(root, self.fiyat_xpath, 'fiyat.')
-            car['uri'] = url
-            #car['path'] = c
-            car['is_riding'] = 1
-            car['addeddate'] = self._current_date
-            
-           
-            es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
-            
-            '''
-            store["ilanno"] = car["ilanno"]
-            store["html"] = c
-            
-            result_store = es.index(index='htmlstore',doc_type='_doc',body=store)
-            '''
-            result = es.index(index='basescparedlist',doc_type='_doc',body=car)
-            
-            query = json.dumps({
-                            "query": { 
-                            "bool": { 
-                               "must": [
-                                          { "match": { "uri":   url }} 
-                                    ]
-                                }
-                            },
-                           "size":1
-                    })
-                    
-            search_res = es.search(index="scrapelists",  body=query)
-            hit_id = search_res["hits"]["hits"][0]["_id"]
-            upt = es.update(index='scrapelists',doc_type='_doc',id=hit_id,body={"doc": {"isquery": True}})
-            
-            print(" **** Processing complete ****  --------> " + car['ilanno'] )
-            return car
-        except:
-            print(sys.exc_info()[0], " occured.")
+        
+        #work  with proxy
 
+        c = ""
+        root =""
+        proxy = ""
+        if self.current_proxy == "":
+            proxies = self.proxy.getProxies()
+            proxy_pool = cycle(proxies)
+            for i in range(1,21):
+                #Get a proxy from the pool
+                proxy = next(proxy_pool)
+                
+                try:
+                    random_user_agent = self.header.getRandomChoiceHeader()
+                    response = requests.get(url,headers=random_user_agent,proxies={"http": proxy, "https": proxy})
+                    c = response.content
+                    root = html.fromstring(c)
+                    car["error"] = xpathSafeRead(root,self.error_xpath,'ERR.')
+                    if car["error"] == "NA":
+                        #print("SUCESSS -------------> " + proxy)
+                        self.current_proxy = proxy
+                        break
+                    else:
+                        self.current_proxy = ""
+                        continue
+                except:
+                    self.current_proxy = ""
+                    continue
+         
+        
+        #work without proxy
+        #c = self.uutils.delayedreadURL(url, self.lowerdelay, self.upperdelay)
+        
+                
+        try:          
+            #work without proxy
+            #root = html.fromstring(c)
+            
+            car["error"] = xpathSafeRead(root,self.error_xpath,'ERR.')
+            if car["error"] == "NA":
+                car['ilanno'] = xpathSafeRead(root, self.ilan_xpath, 'ilan.')          
+                car['ilantarihi'] = xpathSafeRead(root, self.ilantarihi_xpath, 'ilan tarihi.')
+                car['sehir'] = xpathSafeRead(root, self.il_xpath, 'sehir.')
+                car['marka'] = xpathSafeRead(root, self.marka_xpath, 'marka.')
+                car['seri'] = xpathSafeRead(root, self.seri_xpath, 'seri.')
+                car['model'] = xpathSafeRead(root, self.model_xpath, 'model.')
+                car['yil'] = xpathSafeRead(root, self.yil_xpath, 'yil.')
+                car['yakit'] = xpathSafeRead(root, self.yakit_xpath, 'yakit.')
+                car['vites'] = xpathSafeRead(root, self.vites_xpath, 'vites')
+                car['km'] = xpathSafeRead(root, self.km_xpath, 'km.')
+                car['kasatipi'] = xpathSafeRead(root, self.kasatipi_xpath, 'kasa tipi.')
+                car['motorgucu'] = xpathSafeRead(root, self.motorgucu_xpath, 'motor gucu.')
+                car['motorhacmi'] = xpathSafeRead(root, self.motorhacmi_xpath, 'motor hacmi.')
+                car['cekis'] = xpathSafeRead(root, self.cekis_xpath, 'cekis.')
+                car['renk'] = xpathSafeRead(root, self.renk_xpath, 'renk.')
+                car['garanti'] = xpathSafeRead(root, self.garanti_xpath, 'garanti.')
+                #car['hasardurumu'] = xpathSafeRead(root, self.hasar_xpath, 'hasar durumu.')
+                car['plaka'] = xpathSafeRead(root, self.plakauyruk_xpath, 'plaka/uyruk.')
+                car['kimden'] = xpathSafeRead(root, self.kimden_xpath, 'kimden.')
+                
+                if(car['kimden'] == "Sahibinden"):
+                    car['owner'] = xpathSafeRead(root, self.sahibinden_xpath, 'owner.')
+                else:
+                    car['owner'] = xpathSafeRead(root, self.galeri_xpath, 'owner.')
+                
+                car['takas'] = xpathSafeRead(root, self.takas_xpath, 'takas.')
+                car['durum'] = xpathSafeRead(root, self.durum_xpath, 'durumu.')
+                car['fiyat'] = xpathSafeRead(root, self.fiyat_xpath, 'fiyat.')
+                car['uri'] = url
+                #car['path'] = c
+                car["is_riding"] = self.is_riding
+                car['addeddate'] = self._current_date
+
+                
+                '''
+                store["ilanno"] = car["ilanno"]
+                store["html"] = c
+                
+                result_store = es.index(index='htmlstore',doc_type='_doc',body=store)
+                '''
+
+                query = json.dumps({
+                                "query": { 
+                                "bool": { 
+                                   "must": [
+                                              { "match": { "uri":   url }} 
+                                        ]
+                                    }
+                                },
+                               "size":1
+                        })
+                search_res = self.elastic.getSearch('scrapelists',query)
+                body={"doc": {"isquery": True}}
+                hit_id = search_res["hits"]["hits"][0]["_id"]
+                self.es.UpdateRow('scrapelists',hit_id,body)
+                
+                if car["ilanno"] == "NA":
+                    print("NOT AVAİBLE : " + url)
+                else:
+                    print(" **** Processing complete ****  --------> " + car["ilanno"] )
+                    
+                return car
+            else:
+                self.current_proxy = ""
+        except:
+            print(sys.exc_info()[0], " occured. ----------->" + url + " proxy -------> " + proxy)
 
     def _wrapperBatchRun(self, url):
         car = self._get_details_from_url_xpath(url)

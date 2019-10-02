@@ -1,9 +1,10 @@
 from s_scrape.scraping import DetailsScraper, MainPageScraper
 from s_scrape.io import IO
 from s_scrape.srequests import URLlib, URLreq, URLsln
-import time
+from s_scrape.header import MainHeader
+from s_scrape.elastic import ElasticStore
+from s_scrape.proxy import Proxies
 import datetime
-from elasticsearch import Elasticsearch
 import json
 
 now = datetime.datetime.now()
@@ -21,44 +22,51 @@ if month < 10:
 suffix = str(dd)+"-"+str(mm)+"-"+str(year)
 
 listingswait = 5
-mainwait = 15
+mainwait = 5
 
 ulib = URLlib()
 ureq = URLreq()
+header = MainHeader()
+proxy = Proxies(header)
+elastic = ElasticStore()
+
 
 #print("Currently loading listings from pre-scraped list...")
-mscr = MainPageScraper(20, uutils=ulib, lowerdelay=3, upperdelay=3, current_date =suffix )
+mscr = MainPageScraper(40, uutils=ulib,header=header,proxy=proxy,elastic=elastic, lowerdelay=2, upperdelay=5, current_date =suffix ,is_riding=0)
 print("----------------------------Scraping Start----------------------------------------")
 #last week = 7
 print("---------------------Scraping Last 3 Days Start-----------------------------------")
 
 print("Waiting %d seconds before scraping listings..." %mainwait)
 
+
+#mscr.scrapeModels()
+#mscr.scrapeSubModels()
+#mscr.scrapeListings()
 #mscr.scrapeoffsetdayListings(3)
 
-#links = []
+links = []
 
 #mscr.scrapeoffsetdayListingsinES(links)
 
 print("---------------------Scraping Last 3 Days Finish---------------------------")
 
-
 print("Waiting %d seconds before scraping listings..." %mainwait)
 
-
-es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
 query = json.dumps({
                             "query": { 
                             "bool": { 
+                                    
                                "must": [
                                           { "match": { "isquery":   False }} 
                                     ]
                                 }
                             },
-                            "size": 150000
+                            "size": 15
                     })
                     
-res = es.search(index="scrapelists",  body=query)
+
+res = elastic.getSearch('scrapelists',query)
 
 links = []
 
@@ -76,7 +84,7 @@ print("Waiting %d seconds before scraping listings..." %mainwait)
 print("--------------------Scraping Links Start------------------------")
 
 #time.sleep(mainwait)
-scr = DetailsScraper(request_link, 15, ulib, lowerdelay=5, upperdelay=15,current_date =suffix)
+scr = DetailsScraper(request_link, 200, ulib,header=header,proxy=proxy,elastic=elastic, lowerdelay=2, upperdelay=4,current_date =suffix)
 print("Waiting %d seconds before scraping listings..." %mainwait)
 #♣time.sleep(mainwait)
 scr.scrapeDetails()
